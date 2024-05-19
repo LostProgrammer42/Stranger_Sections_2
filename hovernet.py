@@ -3,7 +3,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from collections import OrderedDict
-
+import matplotlib.pyplot as plt
+from PIL import Image
+from torch.utils.data import Dataset
+from torchvision import transforms
+from torch.optim.lr_scheduler import CyclicLR, ConstantLR, SequentialLR, LinearLR
+import os
 
 def crop_op(x, cropping, data_format="NCHW"):
     """Center crop image.
@@ -311,7 +316,7 @@ class HoVerNet(nn.Module):
         self.conv_8 = nn.Conv2d(64, 3, 1, stride=1, padding=0, bias=True)
 
     def forward(self, imgs):
-        imgs = imgs / 255.0
+        # imgs = imgs / 255.0
         x = self.relu_1(self.bn_1(self.conv_1(imgs)))   #d0
         x = self.rb_1(x) #d0
         d0 = x
@@ -335,8 +340,116 @@ class HoVerNet(nn.Module):
         x = self.conv_8(x)
 
         return x
-
-x = torch.randn((1,3,1360,1360))
 model = HoVerNet()
-out = model(x)
-print(out.shape)
+
+class CustomDataset(Dataset):
+    def __init__(self, image_folder, mask_folder, transform=None):
+        self.image_folder = image_folder
+        self.mask_folder = mask_folder
+        self.transform = transform
+        self.images = sorted(os.listdir(image_folder))
+        self.masks = sorted(os.listdir(mask_folder))
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img_name = os.path.join(self.image_folder, self.images[idx])
+        mask_name = os.path.join(self.mask_folder, self.masks[idx]) 
+
+        image = Image.open(img_name) 
+        mask = np.load(mask_name)  # Assuming mask is saved as numpy array
+        mask = torch.from_numpy(mask.astype(np.float32))
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, mask
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model.to(device)
+
+dataset = CustomDataset(image_folder='/media/umic/my_label/Stranger_Sections_Working_Directory/Augmented_Images',mask_folder='/media/umic/my_label/Stranger_Sections_Working_Directory/Augmented_Masks',transform=transforms.ToTensor())
+
+optimizer_kwargs={
+        "lr": 0.00011
+    }
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=1,
+    shuffle=False,
+    drop_last=True,
+    num_workers=8,
+)
+
+criterion = nn.CrossEntropyLoss()
+warmup_epochs = 10
+linear_schedule = True
+cyclic_schedule = False
+cyclic_step_size = 1000
+start_factor = 0.2
+end_factor = 0.5
+n_epochs = 50
+def get_schedulers(optimizer):
+        base_lr = optimizer_kwargs.get('lr')
+        warmup = warmup_epochs > 0  
+        if linear_schedule:
+            linear_scheduler = LinearLR(optimizer, start_factor=1.0, total_iters=n_epochs, end_factor=end_factor)
+
+        else:
+            # placeholder
+            linear_scheduler = ConstantLR(optimizer, factor=1.0)
+        
+        cyclic_scheduler = None
+        if cyclic_schedule:
+            cyclic_scheduler = CyclicLR(optimizer, base_lr=base_lr/4.0, max_lr=base_lr,
+                                        step_size_up=cyclic_step_size, mode='exp_range', gamma=0.99994)
+
+        if warmup:
+            warmup_scheduler = LinearLR(optimizer, start_factor=start_factor, total_iters=warmup_epochs)
+            sequential_scheduler = SequentialLR(optimizer, [warmup_scheduler, linear_scheduler], milestones=[warmup_epochs])
+            return sequential_scheduler, cyclic_scheduler
+        
+        return linear_scheduler, cyclic_scheduler
+
+optimizer = torch.optim.AdamW(model.parameters(), **optimizer_kwargs)
+total_epochs = n_epochs if warmup_epochs < 1 else n_epochs + warmup_epochs
+main_scheduler, cyclic_scheduler = get_schedulers(optimizer)
+
+
+# for param in model.parameters():
+#     param.requires_grad = False
+min_loss = 0
+
+print('Entering Training Loop')
+for epoch in range(1):
+        total_loss = .0
+        
+            
+        for batch in dataloader:
+            views = batch[0]
+            images = views.to(device)
+
+            views = batch[1]
+            masks = views.to(device)
+            print(f'Masks shape: {masks.shape}')
+            print(f'Image size: {images.shape}')
+
+            output = model(images)
+            print(f'Encoder Output: {output.shape}')
+            loss = criterion(output,masks)
+            total_loss += loss.detach()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1e5)
+            optimizer.step()
+            optimizer.zero_grad()
+        avg_loss = total_loss / len(dataloader)
+        current_lr = main_scheduler.get_last_lr()[-1]
+        print(f"epoch: {epoch:>03}, loss: {avg_loss:.5f}, base_lr: {current_lr:.7f}")
+        if epoch == 0:
+            min_loss = avg_loss
+        if avg_loss < min_loss:
+            min_loss = avg_loss
+            torch.save(model.state_dict(),'/media/umic/my_label/Stranger_Sections_Working_Directory/HoverNet_CheckPoints/HoverNet_V1_Min_Loss')
+        main_scheduler.step()
+print("Training Completed")
+print(f'Min Loss = {min_loss}')
