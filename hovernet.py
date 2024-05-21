@@ -218,7 +218,7 @@ class DenseBlock(nn.Module):
                                     unit_ch[0],
                                     unit_ksize[0],
                                     stride=1,
-                                    padding=2,
+                                    padding=0,
                                     bias=False,
                                 ),
                             ),
@@ -233,7 +233,7 @@ class DenseBlock(nn.Module):
                                     unit_ksize[1],
                                     groups=split,
                                     stride=1,
-                                    padding=0,
+                                    padding=2,
                                     bias=False,
                                 ),
                             ),
@@ -296,20 +296,20 @@ class HoVerNet(nn.Module):
         self.bn_1 = nn.BatchNorm2d(64, eps=1e-5)
         self.relu_1 = nn.ReLU(inplace=True)
 
-        self.rb_1 = ResidualBlock(64, [1, 3, 1], [64, 64, 256], 3, stride=1)
-        self.rb_2 = ResidualBlock(256, [1, 3, 1], [128, 128, 512], 4, stride=2)
-        self.rb_3 = ResidualBlock(512, [1, 3, 1], [256, 256, 1024], 6, stride=2)
-        self.rb_4 = ResidualBlock(1024, [1, 3, 1], [512, 512, 2048], 3, stride=2)
+        self.rb_1 = ResidualBlock(64, [1, 3, 1], [64, 64, 256], 1, stride=1)
+        self.rb_2 = ResidualBlock(256, [1, 3, 1], [128, 128, 512], 1, stride=2)
+        self.rb_3 = ResidualBlock(512, [1, 3, 1], [256, 256, 1024], 2, stride=2)
+        self.rb_4 = ResidualBlock(1024, [1, 3, 1], [512, 512, 2048], 1, stride=2)
 
         self.conv_2 = nn.Conv2d(2048, 1024, 1, stride=1, padding=0, bias=False)
 
         self.upsample2x = UpSample2x()
         self.conv_3 =  nn.Conv2d(1024, 256, 5, stride=1, padding=2, bias=False)
-        self.db_1 = DenseBlock(256, [1, 5], [128, 32], 8, split=4)
+        self.db_1 = DenseBlock(256, [1, 5], [128, 32], 4, split=1)
         self.conv_4 = nn.Conv2d(512, 512, 1, stride=1, padding=0, bias=False)
 
         self.conv_5 = nn.Conv2d(512, 128, 5, stride=1, padding=2, bias=False)
-        self.db_2 = DenseBlock(128, [1, 5], [128, 32], 4, split=4)
+        self.db_2 = DenseBlock(128, [1, 5], [128, 32], 2, split=4)
         self.conv_6 = nn.Conv2d(256, 256, 1, stride=1, padding=0, bias=False)
 
         self.conv_7 = nn.Conv2d(256, 64, 5, stride=1, padding=2, bias=False)
@@ -329,7 +329,7 @@ class HoVerNet(nn.Module):
         
         x = self.upsample2x(x) + d2
         x = self.conv_3(x)
-        x = self.db_1(x)
+        x = self.db_1(x) #Error Here 
         x = self.conv_4(x)
         x = self.upsample2x(x) + d1
         x = self.conv_5(x)
@@ -341,7 +341,6 @@ class HoVerNet(nn.Module):
 
         return x
 model = HoVerNet()
-
 class CustomDataset(Dataset):
     def __init__(self, image_folder, mask_folder, transform=None):
         self.image_folder = image_folder
@@ -368,7 +367,7 @@ class CustomDataset(Dataset):
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 
-dataset = CustomDataset(image_folder='/media/umic/my_label/Stranger_Sections_Working_Directory/Augmented_Images',mask_folder='/media/umic/my_label/Stranger_Sections_Working_Directory/Augmented_Masks',transform=transforms.ToTensor())
+dataset = CustomDataset(image_folder='Augmented_Images',mask_folder='Augmented_Masks',transform=transforms.ToTensor())
 
 optimizer_kwargs={
         "lr": 0.00011
@@ -427,15 +426,16 @@ for epoch in range(1):
             
         for batch in dataloader:
             views = batch[0]
-            images = views.to(device)
+            images = views.to(device) 
 
             views = batch[1]
             masks = views.to(device)
-            print(f'Masks shape: {masks.shape}')
-            print(f'Image size: {images.shape}')
-
+            # print(f'Masks shape: {masks.shape}')
+            # print(f'Image size: {images.shape}')
+            # Images are of dimension [BS,3,1360,1360]
+            # Masks are of dimension [BS,1360,1360]
             output = model(images)
-            print(f'Encoder Output: {output.shape}')
+            output = output[0] + 2*output[1] + 3*output[2]
             loss = criterion(output,masks)
             total_loss += loss.detach()
             loss.backward()
